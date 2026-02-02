@@ -31,7 +31,7 @@ const MODEL_MAPPING = {
   'gemini-pro': 'qwen/qwen3-next-80b-a3b-thinking' 
 };
 // Root endpoint
-app.get('/', (req, res) => {
+app.all('/', (req, res) => {
   res.json({ 
     status: 'ok', 
     service: 'OpenAI to NVIDIA NIM Proxy',
