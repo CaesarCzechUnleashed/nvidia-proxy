@@ -62,6 +62,111 @@ app.get('/v1/models', (req, res) => {
   res.json({ object: 'list', data: modelList });
 });
 
+// Handle POST to /v1 (redirect to chat endpoint)
+app.post('/v1', async (req, res) => {
+  console.log('Received POST to /v1, processing as chat completion...');
+  
+  try {
+    if (!NVIDIA_API_KEY) {
+      console.error('NVIDIA_API_KEY not set');
+      return res.status(500).json({
+        error: {
+          message: 'NVIDIA API key not configured',
+          type: 'server_error'
+        }
+      });
+    }
+
+    const { model, messages, temperature = 0.7, max_tokens = 1024, stream = false } = req.body;
+
+    if (!model || !messages) {
+      return res.status(400).json({
+        error: {
+          message: 'Missing required fields: model and messages',
+          type: 'invalid_request_error'
+        }
+      });
+    }
+
+    // Map model name
+    const nvidiaModel = MODELS[model] || MODELS['gpt-4'];
+    console.log(`Mapping ${model} -> ${nvidiaModel}`);
+
+    // Call NVIDIA API
+    const nvidiaRequest = {
+      model: nvidiaModel,
+      messages: messages,
+      temperature: temperature,
+      max_tokens: max_tokens,
+      stream: stream
+    };
+
+    console.log('Calling NVIDIA API...');
+    const response = await axios.post(
+      `${NVIDIA_BASE_URL}/chat/completions`,
+      nvidiaRequest,
+      {
+        headers: {
+          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        responseType: stream ? 'stream' : 'json'
+      }
+    );
+
+    if (stream) {
+      // Stream response
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      response.data.pipe(res);
+    } else {
+      // Regular response - convert to OpenAI format
+      const nvidiaData = response.data;
+      const openaiResponse = {
+        id: `chatcmpl-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: model,
+        choices: nvidiaData.choices || [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: nvidiaData.choices?.[0]?.message?.content || 'Error: No response'
+          },
+          finish_reason: 'stop'
+        }],
+        usage: nvidiaData.usage || {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0
+        }
+      };
+
+      console.log('Sending response');
+      res.json(openaiResponse);
+    }
+
+  } catch (error) {
+    console.error('Error details:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+
+    const status = error.response?.status || 500;
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+
+    res.status(status).json({
+      error: {
+        message: errorMessage,
+        type: 'api_error',
+        code: status
+      }
+    });
+  }
+});
+
 // Main chat endpoint
 app.post('/v1/chat/completions', async (req, res) => {
   try {
