@@ -30,7 +30,19 @@ const MODEL_MAPPING = {
   'claude-3-sonnet': 'qwen/qwen3-235b-a22b',
   'gemini-pro': 'z-ai/glm4_7' 
 };
-
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'OpenAI to NVIDIA NIM Proxy',
+    message: 'Proxy is running. Use /v1/chat/completions for chat requests.',
+    endpoints: {
+      health: '/health',
+      models: '/v1/models',
+      chat: '/v1/chat/completions'
+    }
+  });
+});
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
