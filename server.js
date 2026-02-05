@@ -4,7 +4,7 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(express.json({ limit: '100mb' })); app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use(express.json());
 
 // CORS - allow all origins
 app.use((req, res, next) => {
@@ -26,7 +26,7 @@ app.use((req, res, next) => {
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
 const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 
-// Simple model mapping - using models that definitely work
+// Your model mapping
 const MODELS = {
   'gpt-3.5-turbo': 'moonshotai/kimi-k2-instruct-0905',
   'gpt-4': 'moonshotai/kimi-k2.5',
@@ -34,7 +34,7 @@ const MODELS = {
   'gpt-4o': 'deepseek-ai/deepseek-v3_2',
   'claude-3-opus': 'deepseek-ai/deepseek-v3_1-terminus',
   'claude-3-sonnet': 'qwen/qwen3-235b-a22b',
-  'gemini-pro': 'z-ai/glm4_7' 
+  'gemini-pro': 'z-ai/glm4_7'
 };
 
 // Root endpoint - handles all methods
@@ -62,113 +62,8 @@ app.get('/v1/models', (req, res) => {
   res.json({ object: 'list', data: modelList });
 });
 
-// Handle POST to /v1 (redirect to chat endpoint)
-app.post('/v1', async (req, res) => {
-  console.log('Received POST to /v1, processing as chat completion...');
-  
-  try {
-    if (!NVIDIA_API_KEY) {
-      console.error('NVIDIA_API_KEY not set');
-      return res.status(500).json({
-        error: {
-          message: 'NVIDIA API key not configured',
-          type: 'server_error'
-        }
-      });
-    }
-
-    const { model, messages, temperature = 1.1, max_tokens = 20240, stream = false } = req.body;
-
-    if (!model || !messages) {
-      return res.status(400).json({
-        error: {
-          message: 'Missing required fields: model and messages',
-          type: 'invalid_request_error'
-        }
-      });
-    }
-
-    // Map model name
-    const nvidiaModel = MODELS[model] || MODELS['gpt-4'];
-    console.log(`Mapping ${model} -> ${nvidiaModel}`);
-
-    // Call NVIDIA API
-    const nvidiaRequest = {
-      model: nvidiaModel,
-      messages: messages,
-      temperature: temperature,
-      max_tokens: max_tokens,
-      stream: stream
-    };
-
-    console.log('Calling NVIDIA API...');
-    const response = await axios.post(
-      `${NVIDIA_BASE_URL}/chat/completions`,
-      nvidiaRequest,
-      {
-        headers: {
-          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        responseType: stream ? 'stream' : 'json'
-      }
-    );
-
-    if (stream) {
-      // Stream response
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      response.data.pipe(res);
-    } else {
-      // Regular response - convert to OpenAI format
-      const nvidiaData = response.data;
-      const openaiResponse = {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: nvidiaData.choices || [{
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: nvidiaData.choices?.[0]?.message?.content || 'Error: No response'
-          },
-          finish_reason: 'stop'
-        }],
-        usage: nvidiaData.usage || {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0
-        }
-      };
-
-      console.log('Sending response');
-      res.json(openaiResponse);
-    }
-
-  } catch (error) {
-    console.error('Error details:', {
-      message: error.message,
-      status: error.response?.status,
-      data: error.response?.data
-    });
-
-    const status = error.response?.status || 500;
-    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
-
-    res.status(status).json({
-      error: {
-        message: errorMessage,
-        type: 'api_error',
-        code: status
-      }
-    });
-  }
-});
-
-// Main chat endpoint
-app.post('/v1/chat/completions', async (req, res) => {
+// Main chat function
+async function processChat(req, res) {
   try {
     console.log('Received chat request');
     console.log('Request body:', JSON.stringify(req.body, null, 2));
@@ -183,7 +78,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
     }
 
-    const { model, messages, temperature = 0.7, max_tokens = 1024, stream = false } = req.body;
+    const { model, messages, temperature = 0.7, max_tokens, stream = false } = req.body;
 
     if (!model || !messages) {
       return res.status(400).json({
@@ -198,12 +93,15 @@ app.post('/v1/chat/completions', async (req, res) => {
     const nvidiaModel = MODELS[model] || MODELS['gpt-4'];
     console.log(`Mapping ${model} -> ${nvidiaModel}`);
 
+    // Increase max_tokens to prevent cutoff
+    const finalMaxTokens = max_tokens || 8192;
+
     // Call NVIDIA API
     const nvidiaRequest = {
       model: nvidiaModel,
       messages: messages,
       temperature: temperature,
-      max_tokens: max_tokens,
+      max_tokens: finalMaxTokens,
       stream: stream
     };
 
@@ -216,7 +114,8 @@ app.post('/v1/chat/completions', async (req, res) => {
           'Authorization': `Bearer ${NVIDIA_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        responseType: stream ? 'stream' : 'json'
+        responseType: stream ? 'stream' : 'json',
+        timeout: 360000 // 6 minutes timeout
       }
     );
 
@@ -271,7 +170,13 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     });
   }
-});
+}
+
+// Handle POST to /v1
+app.post('/v1', processChat);
+
+// Main chat endpoint
+app.post('/v1/chat/completions', processChat);
 
 // Catch all other routes
 app.all('*', (req, res) => {
